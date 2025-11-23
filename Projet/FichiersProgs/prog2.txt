@@ -1,0 +1,4 @@
+1024
+MOV DX, 10
+ADD DX, AX
+NOP
