@@ -1,4 +1,0 @@
-512
-MOV AX, BX
-ADD AX, 4
-SUB CX, AX

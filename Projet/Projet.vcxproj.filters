@@ -24,9 +24,4 @@
       <Filter>Fichiers sources</Filter>
     </ClCompile>
   </ItemGroup>
-  <ItemGroup>
-    <Text Include="prog1.txt" />
-    <Text Include="prog2.txt" />
-    <Text Include="prog3.txt" />
-  </ItemGroup>
 </Project>
