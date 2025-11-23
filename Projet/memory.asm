@@ -1,9 +1,11 @@
 ; =========================================================
-; Module ASM - Noyau Final (Correction Bug R10 + Infos MV)
+; Module ASM - Noyau Final
+; Intègre : Alloc, Swap, Fermeture (Step 5) et VirtualFree
 ; =========================================================
 
+; --- Importation des APIs Windows ---
 extern VirtualAlloc : proc
-extern VirtualFree  : proc
+extern VirtualFree  : proc  ; <--- OBLIGATOIRE POUR LIBERER
 
 .data
     align 8
@@ -17,41 +19,48 @@ extern VirtualFree  : proc
     TablePCB    BYTE 320 DUP(0) 
     NbProgs     DWORD 0         
     
-    ; --- PARAMETRES DE TEST ---
-    TAILLE_RAM_BYTES EQU 2000      ; 2000 octets (Test Swap)
-    TAILLE_MV_BYTES  EQU 10485760  ; 10 Mo
+    ; --- PARAMETRES ---
+    TAILLE_RAM_BYTES EQU 2000      ; Petite taille pour tester le Swap
+    TAILLE_MV_BYTES  EQU 10485760  
     
     MEM_COMMIT_RESERVE EQU 3000h
-    MEM_RELEASE        EQU 8000h
+    MEM_RELEASE        EQU 8000h   ; Code pour VirtualFree
     PAGE_READWRITE     EQU 4
 
 .code
 
-; --- GETTERS POUR C++ ---
+; --- GETTERS ---
 GetRamUsageASM proc
     mov rax, [offsetRAM]
     ret
 GetRamUsageASM endp
-
 GetRamTotalASM proc
     mov rax, TAILLE_RAM_BYTES
     ret
 GetRamTotalASM endp
-
-GetMvUsageASM proc            ; <--- NOUVEAU
+GetMvUsageASM proc
     mov rax, [offsetMV]
     ret
 GetMvUsageASM endp
-
-GetMvTotalASM proc            ; <--- NOUVEAU
+GetMvTotalASM proc
     mov rax, TAILLE_MV_BYTES
     ret
 GetMvTotalASM endp
+GetPtrRAM proc
+    mov rax, [ptrRAM]
+    ret
+GetPtrRAM endp
+GetPtrMV proc
+    mov rax, [ptrMV]
+    ret
+GetPtrMV endp
 
-; --- INITIALISATION ---
+; =========================================================
+; InitNoyauASM : Allocation (Step 1)
+; =========================================================
 InitNoyauASM proc
     sub rsp, 28h
-    
+
     ; Alloc RAM
     mov rcx, 0
     mov rdx, TAILLE_RAM_BYTES
@@ -81,22 +90,30 @@ InitNoyauASM proc
     ret
 InitNoyauASM endp
 
-; --- LIBERATION ---
+; =========================================================
+; LibererMemoireASM : Le vrai VirtualFree (Step 5 / Fin)
+; C'est ici qu'on rend physiquement la mémoire à Windows
+; =========================================================
 LibererMemoireASM proc
     sub rsp, 28h
+    
+    ; 1. Libération RAM
     mov rcx, [ptrRAM]
     test rcx, rcx
     jz FreeMV
-    xor rdx, rdx
-    mov r8, MEM_RELEASE
-    call VirtualFree
+    xor rdx, rdx            ; Taille = 0 (Car MEM_RELEASE libère tout le bloc)
+    mov r8, MEM_RELEASE     ; Flag MEM_RELEASE
+    call VirtualFree        ; <--- APPEL OFFICIEL
+
 FreeMV:
+    ; 2. Libération MV
     mov rcx, [ptrMV]
     test rcx, rcx
     jz FinLib
     xor rdx, rdx
     mov r8, MEM_RELEASE
-    call VirtualFree
+    call VirtualFree        ; <--- APPEL OFFICIEL
+
 FinLib:
     add rsp, 28h
     ret
@@ -148,12 +165,60 @@ GetNbProgsASM proc
     ret
 GetNbProgsASM endp
 
+; =========================================================
+; FermerProcessusASM (Step 5)
+; Marque l'espace comme libre (Mise à zéro)
+; Note: On ne peut pas utiliser VirtualFree ici sur un sous-bloc
+; sans détruire toute la RAM allouée en Step 1.
+; =========================================================
+FermerProcessusASM proc
+    push rdi
+    push rax
+
+    xor r8, r8
+    mov r9d, [NbProgs]
+    lea r10, TablePCB
+
+BoucleRechFermer:
+    cmp r8d, r9d
+    jge IntrouvableFermer
+    cmp [r10], ecx
+    je TrouveFermer
+    add r10, 32
+    inc r8
+    jmp BoucleRechFermer
+
+TrouveFermer:
+    ; On efface les données (remplit de 0) pour simuler la libération
+    mov rdi, [r10+16]
+    mov ecx, [r10+4]
+    test rdi, rdi
+    jz Marquer
+    xor eax, eax
+    cld
+    rep stosb
+
+Marquer:
+    mov dword ptr [r10+8], 0 ; ETAT = FERME
+    mov qword ptr [r10+16], 0; ADRESSE = NULL
+    
+    mov rax, 1
+    pop rax
+    pop rdi
+    ret
+
+IntrouvableFermer:
+    xor rax, rax
+    pop rax
+    pop rdi
+    ret
+FermerProcessusASM endp
+
 ; --- SWAPPING ---
 SwapperToutVersMV proc
     push rsi
     push rdi
     push rbx
-    ; Note: R10 est utilisé ici comme curseur
     xor r8, r8
     mov r9d, [NbProgs]
     lea r10, TablePCB 
@@ -162,10 +227,9 @@ BoucleSwap:
     cmp r8d, r9d
     jge FinSwap
 
-    cmp dword ptr [r10+8], 1 ; Si EN RAM
+    cmp dword ptr [r10+8], 1
     jne Prochain
 
-    ; Copie
     mov rsi, [r10+16]
     mov rdi, [ptrMV]
     add rdi, [offsetMV]
@@ -173,13 +237,11 @@ BoucleSwap:
     cld
     rep movsb
 
-    ; Update PCB
     mov rax, [ptrMV]
     add rax, [offsetMV]
     mov [r10+16], rax
-    mov dword ptr [r10+8], 2 ; ETAT SWAPPE
+    mov dword ptr [r10+8], 2 
 
-    ; Update Offset MV
     mov eax, [r10+4]
     add [offsetMV], rax
 
@@ -196,7 +258,7 @@ FinSwap:
     ret
 SwapperToutVersMV endp
 
-; --- LANCEMENT (CORRIGÉ) ---
+; --- LANCEMENT ---
 LancerProcessusASM proc
     xor r8, r8
     mov r9d, [NbProgs]
@@ -215,9 +277,7 @@ Trouve:
     cmp dword ptr [r10+8], 1
     je DejaOuvert
 
-    mov r11d, [r10+4] ; R11 = Taille requise
-
-    ; Sécurité taille > RAM totale
+    mov r11d, [r10+4]
     cmp r11d, TAILLE_RAM_BYTES
     ja TropGros
 
@@ -225,33 +285,22 @@ VerifierPlace:
     mov rax, [offsetRAM]
     mov rdx, rax
     add rdx, r11
-    
     cmp rdx, TAILLE_RAM_BYTES
     ja PasDePlace
 
-    ; --- ALLOCATION OK ---
-    ; R10 pointe bien vers le bon PCB ici
     mov rax, [ptrRAM]
     add rax, [offsetRAM]
-    mov [r10+16], rax        ; Adresse
-    mov dword ptr [r10+8], 1 ; Etat = 1 (EN RAM)
+    mov [r10+16], rax
+    mov dword ptr [r10+8], 1
     add [offsetRAM], r11
     ret
 
 PasDePlace:
-    ; === CORRECTION DU BUG ===
-    ; On sauvegarde R10 (Pointeur PCB) et R11 (Taille)
-    ; car SwapperToutVersMV va modifier R10 !
     push r10
     push r11
-    
     call SwapperToutVersMV
-    
     pop r11
     pop r10
-    ; R10 pointe à nouveau correctement vers notre programme
-    ; =========================
-    
     jmp VerifierPlace
 
 Introuvable:
