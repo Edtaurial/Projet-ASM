@@ -314,4 +314,171 @@ TropGros:
     ret
 LancerProcessusASM endp
 
+
+; ---------------------------------------------------------
+; UtiliserProcessusASM (Etape 6 - Swap In)
+; Rôle : Rend un programme actif. S'il est en MV, le ramène en RAM.
+; Entrée : RCX = ID
+; ---------------------------------------------------------
+UtiliserProcessusASM proc
+    push rsi
+    push rdi
+    push rbx
+
+    ; 1. Trouver le programme
+    xor r8, r8
+    mov r9d, [NbProgs]
+    lea r10, TablePCB
+
+BoucleRechUtil:
+    cmp r8d, r9d
+    jge IntrouvableUtil
+
+    cmp [r10], ecx
+    je TrouveUtil
+    
+    add r10, 32
+    inc r8
+    jmp BoucleRechUtil
+
+TrouveUtil:
+    ; Cas A : Déjà en RAM ?
+    cmp dword ptr [r10+8], 1
+    je EstDejaEnRam
+
+    ; Cas B : Est-il Fermé ?
+    cmp dword ptr [r10+8], 0
+    je EstFerme
+
+    ; Cas C : Il est SWAPPE (Etat 2). On doit le ramener.
+    ; "ramenez-le en RAM"
+    
+    ; 1. Vérifier si on a la place en RAM maintenant
+    mov r11d, [r10+4]       ; Taille
+    mov rax, [offsetRAM]
+    add rax, r11
+    cmp rax, TAILLE_RAM_BYTES
+    ja PasDePlaceRAM        ; Si pas de place -> On vide la RAM d'abord
+
+    ; 2. Copier MV -> RAM
+ExecuterSwapIn:
+    ; Source : Adresse actuelle en MV
+    mov rsi, [r10+16]       
+    
+    ; Destination : Base RAM + Offset RAM
+    mov rdi, [ptrRAM]
+    add rdi, [offsetRAM]
+    
+    ; Taille
+    mov ecx, [r10+4]
+    
+    cld
+    rep movsb
+
+    ; 3. Mettre à jour PCB
+    mov rax, [ptrRAM]
+    add rax, [offsetRAM]
+    mov [r10+16], rax       ; Nouvelle Adresse (RAM)
+    mov dword ptr [r10+8], 1; Nouvel Etat (EN RAM)
+
+    ; 4. Avancer Offset RAM
+    mov eax, [r10+4]
+    add [offsetRAM], rax
+
+    ; Retourne la nouvelle adresse
+    mov rax, [r10+16]
+    jmp FinUtil
+
+PasDePlaceRAM:
+    ; La RAM est pleine. On doit swapper les autres vers la MV pour faire de la place.
+    ; ATTENTION : On doit sauvegarder le pointeur R10 car le call peut utiliser des registres
+    push r10
+    push r11
+    
+    call SwapperToutVersMV  ; Vide la RAM (offsetRAM revient à 0)
+    
+    pop r11
+    pop r10
+    
+    ; Maintenant que la RAM est vide, on procède à la copie (Swap In)
+    jmp ExecuterSwapIn
+
+EstDejaEnRam:
+    mov rax, [r10+16]       ; Retourne adresse actuelle
+    jmp FinUtil
+
+EstFerme:
+    xor rax, rax            ; Erreur (Fermé)
+    jmp FinUtil
+
+IntrouvableUtil:
+    xor rax, rax
+
+FinUtil:
+    pop rbx
+    pop rdi
+    pop rsi
+    ret
+UtiliserProcessusASM endp
+
+
+; ---------------------------------------------------------
+; VerifierAccesASM (Etape 7 - Protection Memoire)
+; Rôle : Vérifie si une adresse appartient à un programme
+; Entrée : RCX = ID du programme
+;          RDX = Adresse Cible (Pointeur)
+; Retour : RAX = 1 (Autorisé), 0 (Refusé/SegFault), -1 (Non chargé)
+; ---------------------------------------------------------
+VerifierAccesASM proc
+    ; 1. Trouver le programme
+    xor r8, r8
+    mov r9d, [NbProgs]
+    lea r10, TablePCB
+
+BoucleRechAcces:
+    cmp r8d, r9d
+    jge IntrouvableAcces
+
+    cmp [r10], ecx
+    je TrouveAcces
+    
+    add r10, 32
+    inc r8
+    jmp BoucleRechAcces
+
+TrouveAcces:
+    ; 2. Vérifier si le programme est bien en RAM (Etat = 1)
+    cmp dword ptr [r10+8], 1
+    jne PasEnRam
+
+    ; 3. Vérification des bornes (PROTECTION) 
+    ; Borne Inférieure : Adresse Debut
+    mov rax, [r10+16]       ; Base Address
+    cmp rdx, rax
+    jb AccesRefuse          ; Si Cible < Debut => Erreur
+
+    ; Borne Supérieure : Adresse Debut + Taille
+    mov r11d, [r10+4]       ; Taille
+    add rax, r11            ; RAX = Fin (Exclusive)
+    cmp rdx, rax
+    jae AccesRefuse         ; Si Cible >= Fin => Erreur
+
+    ; --- SUCCES ---
+    mov rax, 1              ; Accès Autorisé
+    ret
+
+AccesRefuse:
+    xor rax, rax            ; Return 0 (Segmentation Fault)
+    ret
+
+PasEnRam:
+    mov rax, -1             ; Return -1 (Erreur: Programme non chargé ou swappé)
+    ret
+
+IntrouvableAcces:
+    mov rax, -2             ; ID Inconnu
+    ret
+VerifierAccesASM endp
+
+
 end
