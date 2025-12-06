@@ -1,5 +1,6 @@
 ; =========================================================
-; Module ASM - Noyau Final (Swapping Intelligent + Compactage)
+; Gestionnaire de mémoire simulant une RAM et une MV.
+; Gère l'allocation contiguë et le swapping FIFO.
 ; =========================================================
 
 extern VirtualAlloc : proc
@@ -7,70 +8,97 @@ extern VirtualFree  : proc
 
 .data
     align 8
-    ptrRAM      QWORD 0         
-    ptrMV       QWORD 0         
-    offsetRAM   QWORD 0         
-    offsetMV    QWORD 0         
+    ; --- Pointeurs vers la mémoire réelle allouée par Windows ---
+    ptrRAM      QWORD 0          ; Adresse de début de notre bloc RAM simulé
+    ptrMV       QWORD 0          ; Adresse de début de notre bloc MV simulé
     
+    ; --- Curseurs (Offset) ---
+    offsetRAM   QWORD 0          ; Position du prochain octet libre en RAM (Pile)
+    offsetMV    QWORD 0          ; Position du prochain octet libre en MV
+    
+    ; --- Gestion des Processus (PCB) ---
     MAX_PROGS   EQU 10
+    ; TablePCB : Tableau de 10 structures de 32 octets.
+    ; Structure PCB (32 octets) :
+    ;   [0-3]   ID (int)
+    ;   [4-7]   Taille (int)
+    ;   [8-11]  Etat (int : 0=Ferme, 1=RAM, 2=Swap)
+    ;   [16-23] Adresse (void*)
     TablePCB    BYTE 320 DUP(0) 
     NbProgs     DWORD 0  
     ActiveProgID DWORD 0       
     
-    ; --- PARAMETRES DE TEST ---
-    TAILLE_RAM_BYTES EQU 4194304      
-    TAILLE_MV_BYTES  EQU 10485760  
+    ; --- PARAMETRES ---
+    TAILLE_RAM_BYTES EQU 4194304      ; 4 Mo
+    TAILLE_MV_BYTES  EQU 10485760     ; 10 Mo
     
+    ; --- Constantes Windows API ---
     MEM_COMMIT_RESERVE EQU 3000h
     MEM_RELEASE        EQU 8000h
     PAGE_READWRITE     EQU 4
 
 .code
 
-; --- GETTERS ---
+; =========================================================
+; SECTION : GETTERS / SETTERS
+; Rôle : Interface simple pour permettre au C++ de lire les variables ASM
+; =========================================================
 GetRamUsageASM proc
     mov rax, [offsetRAM]
     ret
 GetRamUsageASM endp
+
 GetRamTotalASM proc
     mov rax, TAILLE_RAM_BYTES
     ret
 GetRamTotalASM endp
+
 GetMvUsageASM proc
     mov rax, [offsetMV]
     ret
 GetMvUsageASM endp
+
 GetMvTotalASM proc
     mov rax, TAILLE_MV_BYTES
     ret
 GetMvTotalASM endp
+
 GetPtrRAM proc
     mov rax, [ptrRAM]
     ret
 GetPtrRAM endp
+
 GetPtrMV proc
     mov rax, [ptrMV]
     ret
 GetPtrMV endp
+
 GetActiveProgIDASM proc
     mov eax, [ActiveProgID]
     ret
 GetActiveProgIDASM endp
+
 SetActiveProgIDASM proc
     mov [ActiveProgID], ecx
     ret
 SetActiveProgIDASM endp
 
-; --- INIT & LIBERATION ---
+; =========================================================
+; SECTION : INITIALISATION & NETTOYAGE
+; Rôle : Demande la mémoire réelle à l'OS (Windows) au démarrage
+; =========================================================
 InitNoyauASM proc
-    sub rsp, 28h
-    mov rcx, 0
+    sub rsp, 28h             ; Alignement de la pile (Shadow Space)
+
+    ; 1. Allouer le bloc RAM (4 Mo)
+    mov rcx, 0               ; Adresse préférée (NULL = OS choisit)
     mov rdx, TAILLE_RAM_BYTES
     mov r8, MEM_COMMIT_RESERVE
     mov r9, PAGE_READWRITE
     call VirtualAlloc
-    mov [ptrRAM], rax
+    mov [ptrRAM], rax        ; Sauvegarde l'adresse retournée
 
+    ; 2. Allouer le bloc MV (10 Mo)
     mov rcx, 0
     mov rdx, TAILLE_MV_BYTES
     mov r8, MEM_COMMIT_RESERVE
@@ -78,28 +106,33 @@ InitNoyauASM proc
     call VirtualAlloc
     mov [ptrMV], rax
 
+    ; 3. Initialiser les variables à 0
     mov [offsetRAM], 0
     mov [offsetMV], 0
     mov [NbProgs], 0
     mov [ActiveProgID], 0
 
+    ; 4. Nettoyer la table PCB (mettre tout à 0)
     lea rdi, TablePCB
-    mov rcx, 40
+    mov rcx, 40              ; 40 qwords = 320 octets
     xor rax, rax
-    rep stosq
+    rep stosq                ; Ecrit 0 partout
+    
     add rsp, 28h
     ret
 InitNoyauASM endp
 
 LibererMemoireASM proc
     sub rsp, 28h
+    ; Libère RAM
     mov rcx, [ptrRAM]
     test rcx, rcx
     jz FreeMV
-    xor rdx, rdx
+    xor rdx, rdx             ; Taille 0 pour MEM_RELEASE
     mov r8, MEM_RELEASE
     call VirtualFree
 FreeMV:
+    ; Libère MV
     mov rcx, [ptrMV]
     test rcx, rcx
     jz FinLib
@@ -111,41 +144,59 @@ FinLib:
     ret
 LibererMemoireASM endp
 
-; --- GESTION PCB ---
+; =========================================================
+; SECTION : GESTION PCB
+; =========================================================
 EnregistrerProcessusASM proc
+    ; Entrée : ECX = ID, EDX = Taille en Ko
+    
+    ; 1. Conversion Ko -> Octets
+    ; On décale de 10 bits à gauche (équivaut à multiplier par 1024)
     shl edx, 10
+
+    ; 2. Vérifier si on a atteint la limite de processus
     mov r8d, [NbProgs]
     cmp r8d, MAX_PROGS
     jge FinEnreg
+
+    ; 3. Calculer l'adresse dans le tableau PCB
+    ; Adresse = TablePCB + (Index * 32)
     mov rax, r8
-    shl rax, 5
+    shl rax, 5               ; x32 (taille d'une struct PCB)
     lea r9, TablePCB
     add r9, rax
-    mov [r9], ecx
-    mov [r9+4], edx
-    mov dword ptr [r9+8], 0
-    mov qword ptr [r9+16], 0
+
+    ; 4. Remplir le PCB
+    mov [r9], ecx            ; ID
+    mov [r9+4], edx          ; Taille (Octets)
+    mov dword ptr [r9+8], 0  ; Etat (0 = Fermé)
+    mov qword ptr [r9+16], 0 ; Adresse (NULL)
+
     inc dword ptr [NbProgs]
 FinEnreg:
     ret
 EnregistrerProcessusASM endp
 
 GetProcessInfoASM proc
+    ; Récupère les infos d'un PCB pour les donner au C++
     cmp ecx, [NbProgs]
     jge ErreurIndex
+
     mov rax, rcx
-    shl rax, 5
+    shl rax, 5               ; Index * 32
     lea r10, TablePCB
     add r10, rax
+
     mov eax, [r10]
-    mov [rdx], eax
+    mov [rdx], eax           ; Retourne ID
     mov eax, [r10+4]
-    mov [r8], eax
+    mov [r8], eax            ; Retourne Taille
     mov eax, [r10+8]
-    mov [r9], eax
-    mov r11, [rsp + 40] 
+    mov [r9], eax            ; Retourne Etat
+    
+    mov r11, [rsp + 40]      ; 5ème argument (passed on stack)
     mov rax, [r10+16]
-    mov [r11], rax 
+    mov [r11], rax           ; Retourne Adresse
     mov rax, 1
     ret
 ErreurIndex:
@@ -159,6 +210,7 @@ GetNbProgsASM proc
 GetNbProgsASM endp
 
 FermerProcessusASM proc
+    ; ... (Code de recherche du PCB standard) ...
     push rdi
     push rax
     xor r8, r8
@@ -172,17 +224,21 @@ BoucleRechFermer:
     add r10, 32
     inc r8
     jmp BoucleRechFermer
+
 TrouveFermer:
-    mov rdi, [r10+16]
-    mov ecx, [r10+4]
-    test rdi, rdi
+    ; Simulation de "Secure Wipe" : on remplit la mémoire de 0
+    mov rdi, [r10+16]        ; Adresse mémoire du prog
+    mov ecx, [r10+4]         ; Taille
+    test rdi, rdi            ; Si adresse NULL, rien à faire
     jz Marquer
     xor eax, eax
     cld
-    rep stosb
+    rep stosb                ; Remplit de zéros
 Marquer:
-    mov dword ptr [r10+8], 0
-    mov qword ptr [r10+16], 0
+    mov dword ptr [r10+8], 0 ; Etat = Fermé
+    mov qword ptr [r10+16], 0; Adresse = NULL
+    
+    ; Si c'était le prog actif, on le désactive
     mov eax, [r10]
     cmp [ActiveProgID], eax
     jne PasActif
@@ -200,9 +256,9 @@ IntrouvableFermer:
 FermerProcessusASM endp
 
 ; =========================================================
-; EjecterPremierProgramme (NOUVEAU - SWAP INTELLIGENT)
-; Rôle : Trouve le programme situé tout au début de la RAM,
-;        le déplace en MV, et DÉCALE (Compacte) le reste.
+; SECTION CRITIQUE : SWAP INTELLIGENT & COMPACTAGE
+; Rôle : Libère de l'espace en enlevant le PREMIER programme (FIFO).
+;        Ensuite, COMPACTE la RAM pour boucher le trou.
 ; =========================================================
 EjecterPremierProgramme proc
     push rsi
@@ -211,21 +267,22 @@ EjecterPremierProgramme proc
     push r12
     push r13
 
-    ; 1. Trouver la "Victime" : C'est celui dont Adresse == ptrRAM
+    ; --- ETAPE 1 : IDENTIFIER LA VICTIME ---
+    ; La victime est le programme situé à l'adresse ptrRAM (offset 0)
     xor r8, r8
     mov r9d, [NbProgs]
     lea r10, TablePCB
-    mov r12, [ptrRAM]       ; Adresse cible (Début RAM)
-    xor r13, r13            ; Pointeur vers PCB victime (0 = pas trouvé)
+    mov r12, [ptrRAM]        ; On cherche qui est ici (Début RAM)
+    xor r13, r13             ; R13 stockera le PCB de la victime
 
 ChercherVictime:
     cmp r8d, r9d
     jge FinRechercheVictime
     
-    cmp dword ptr [r10+8], 1 ; Est-il en RAM ?
+    cmp dword ptr [r10+8], 1 ; Doit être EN RAM
     jne SuivantVictime
     
-    cmp [r10+16], r12       ; Est-il au tout début (offset 0) ?
+    cmp [r10+16], r12        ; Son adresse == Début RAM ?
     je TrouveVictime
     
 SuivantVictime:
@@ -234,65 +291,59 @@ SuivantVictime:
     jmp ChercherVictime
 
 TrouveVictime:
-    mov r13, r10            ; R13 contient le PCB du programme à éjecter
-    
+    mov r13, r10             ; On a trouvé !
+
 FinRechercheVictime:
     test r13, r13
-    jz FinEjection          ; Si pas trouvé (RAM vide ou bug), on sort
+    jz FinEjection           ; Sécurité : Si RAM vide, on sort
 
-    ; --- 2. COPIER VICTIME VERS MV ---
-    mov rsi, [r13+16]       ; Source (RAM)
-    mov rdi, [ptrMV]        ; Dest (MV)
-    add rdi, [offsetMV]     ; Offset MV
-    mov ecx, [r13+4]        ; Taille
+    ; --- ETAPE 2 : SAUVEGARDER LA VICTIME EN MV ---
+    mov rsi, [r13+16]        ; Source : RAM
+    mov rdi, [ptrMV]         ; Dest   : MV
+    add rdi, [offsetMV]      ; Position libre en MV
+    mov ecx, [r13+4]         ; Taille
     
-    ; Copie RAM -> MV
-    push rcx                ; Sauve taille pour plus tard
+    ; Copie (memcpy)
+    push rcx                 ; Sauve taille
     cld
     rep movsb
-    pop rcx                 ; Récupère taille (dans RCX)
+    pop rcx                  ; Restaure taille
 
-    ; Mise à jour PCB Victime
+    ; Mise à jour du PCB Victime
     mov rax, [ptrMV]
     add rax, [offsetMV]
-    mov [r13+16], rax       ; Nouvelle adresse (MV)
-    mov dword ptr [r13+8], 2 ; ETAT = SWAPPE
+    mov [r13+16], rax        ; Nouvelle adresse (MV)
+    mov dword ptr [r13+8], 2 ; Etat = SWAPPE (2)
     
-    ; Si c'était l'actif, reset
-    mov eax, [r13]
-    cmp [ActiveProgID], eax
-    jne UpdateMV
-    mov [ActiveProgID], 0
-
-UpdateMV:
+    ; Mise à jour Offset MV
     mov eax, [r13+4]
-    add [offsetMV], rax     ; Avance Offset MV
+    add [offsetMV], rax
 
-    ; --- 3. COMPACTAGE DE LA RAM (SHIFT) ---
-    ; On doit décaler tout ce qui était APRES la victime vers le HAUT (vers 0)
-    ; Taille du trou = Taille Victime (dans [r13+4])
-    mov r12d, [r13+4]       ; R12 = Taille du trou (Shift Amount)
+    ; --- ETAPE 3 : COMPACTAGE (DEFRAGMENTATION) ---
+    ; On a un trou au début de la RAM. Il faut décaler tout le reste vers le haut.
     
-    ; Calculer combien d'octets il faut bouger
-    ; BytesToMove = offsetRAM - TailleVictime
+    mov r12d, [r13+4]        ; R12 = Taille du trou (Taille victime)
+    
+    ; Calculer la quantité de mémoire restante à déplacer
+    ; Reste = OffsetActuel - TailleVictime
     mov rcx, [offsetRAM]
     sub rcx, r12
     
     cmp rcx, 0
-    jle FinCompactage       ; Rien à bouger (la RAM est vide après ce prog)
+    jle FinCompactage        ; Si la RAM est vide après lui, rien à bouger
 
-    ; Déplacement Mémoire (memmove)
-    ; Destination = ptrRAM
-    mov rdi, [ptrRAM]
-    ; Source = ptrRAM + TailleVictime
+    ; Déplacement (memmove)
+    mov rdi, [ptrRAM]        ; Destination : Tout début de la RAM (on écrase la victime)
     mov rsi, [ptrRAM]
-    add rsi, r12
+    add rsi, r12             ; Source : Ce qui venait juste après la victime
     
     cld
-    rep movsb               ; Décale tout vers le bas
+    rep movsb                ; On décale tout vers le bas (vers 0)
 
-    ; --- 4. MISE A JOUR DES AUTRES PCB ---
-    ; Tous les programmes qui sont EN RAM doivent voir leur adresse reculer de R12
+    ; --- ETAPE 4 : METTRE A JOUR LES ADRESSES DES AUTRES ---
+    ; Puisqu'on a bougé les données physiques, les pointeurs dans TablePCB sont faux.
+    ; Il faut soustraire "TailleVictime" à tous les programmes restants en RAM.
+    
     xor r8, r8
     mov r9d, [NbProgs]
     lea r10, TablePCB
@@ -304,10 +355,10 @@ BoucleUpdateAdresse:
     cmp dword ptr [r10+8], 1 ; Si EN RAM
     jne NextUpdate
     
-    ; Adresse = Adresse - TailleTrou
+    ; NouvelleAdresse = AncienneAdresse - TailleTrou
     mov rax, [r10+16]
     sub rax, r12
-    mov [r10+16], rax
+    mov [r10+16], rax        ; Sauvegarde nouvelle adresse
 
 NextUpdate:
     add r10, 32
@@ -317,7 +368,8 @@ NextUpdate:
 FinUpdateAdresses:
 
 FinCompactage:
-    ; --- 5. REDUIRE OFFSET RAM ---
+    ; --- ETAPE 5 : METTRE A JOUR L'OFFSET GLOBAL ---
+    ; La RAM est maintenant plus vide, on recule le curseur de fin.
     sub [offsetRAM], r12
 
 FinEjection:
@@ -330,9 +382,10 @@ FinEjection:
 EjecterPremierProgramme endp
 
 ; =========================================================
-; LancerProcessusASM
+; SECTION : ALLOCATION & LANCEMENT
 ; =========================================================
 LancerProcessusASM proc
+    ; ... (Recherche PCB standard) ...
     xor r8, r8
     mov r9d, [NbProgs]
     lea r10, TablePCB
@@ -348,36 +401,38 @@ BoucleRech:
 
 Trouve:
     cmp dword ptr [r10+8], 1
-    je DejaOuvert
+    je DejaOuvert            ; Déjà lancé
 
-    mov r11d, [r10+4]           ; Taille demandée
+    mov r11d, [r10+4]        ; Taille requise
     cmp r11d, TAILLE_RAM_BYTES
-    ja TropGros
+    ja TropGros              ; Prog > RAM Totale
 
 VerifierPlaceLancer:
+    ; Vérifie si (OffsetRAM + Taille) > RAM_MAX
     mov rax, [offsetRAM]
     mov rdx, rax
     add rdx, r11
     cmp rdx, TAILLE_RAM_BYTES
-    ja PasDePlaceLancer         ; -> EJECTION INTELLIGENTE
+    ja PasDePlaceLancer
 
-    ; Place OK
+    ; --- SUCCES : On alloue à la fin (offsetRAM) ---
     mov rax, [ptrRAM]
     add rax, [offsetRAM]
-    mov [r10+16], rax
-    mov dword ptr [r10+8], 1
-    add [offsetRAM], r11
-    mov [ActiveProgID], ecx
+    mov [r10+16], rax        ; Adresse physique
+    mov dword ptr [r10+8], 1 ; Etat RAM
+    add [offsetRAM], r11     ; Avance curseur
+    mov [ActiveProgID], ecx  ; Définit comme actif
     ret
 
 PasDePlaceLancer:
-    ; Au lieu de tout vider, on éjecte juste le premier (FIFO)
-    push r10
+    ; --- ECHEC : RAM pleine ---
+    ; On appelle notre routine de compactage pour libérer de la place
+    push r10                 ; Sauve contexte
     push r11
-    call EjecterPremierProgramme
+    call EjecterPremierProgramme 
     pop r11
     pop r10
-    jmp VerifierPlaceLancer     ; On réessaie (peut-être qu'il faut en éjecter un 2ème ?)
+    jmp VerifierPlaceLancer  ; On réessaie (boucle tant que pas assez de place)
 
 Introuvable:
     xor rax, rax
@@ -391,9 +446,10 @@ TropGros:
 LancerProcessusASM endp
 
 ; =========================================================
-; UtiliserProcessusASM
+; SECTION : SWAP IN (RAMENER UN PROG)
 ; =========================================================
 UtiliserProcessusASM proc
+    ; ... (Recherche PCB standard) ...
     push rsi
     push rdi
     push rbx
@@ -415,40 +471,47 @@ TrouveUtil:
     cmp dword ptr [r10+8], 0
     je EstFerme
 
-    ; Swap In requis
-    mov r11d, [r10+4]       ; Taille prog à ramener
+    ; --- LE PROGRAMME EST EN SWAP (MV) ---
+    mov r11d, [r10+4]        ; Taille à ramener
 
 VerifierPlaceUtil:
+    ; A-t-on la place en RAM pour le ramener ?
     mov rax, [offsetRAM]
     add rax, r11
     cmp rax, TAILLE_RAM_BYTES
-    ja PasDePlaceUtil       ; -> EJECTION INTELLIGENTE
+    ja PasDePlaceUtil
 
-    ; Copie MV -> RAM
-    mov rsi, [r10+16]       
+    ; --- OUI : On copie MV -> RAM ---
+    mov rsi, [r10+16]        ; Source : MV
     mov rdi, [ptrRAM]
-    add rdi, [offsetRAM]
+    add rdi, [offsetRAM]     ; Dest   : Fin RAM actuelle
     mov ecx, [r10+4]
     cld
     rep movsb
 
+    ; Mise à jour PCB
     mov rax, [ptrRAM]
     add rax, [offsetRAM]
-    mov [r10+16], rax
-    mov dword ptr [r10+8], 1
+    mov [r10+16], rax        ; Nouvelle adresse RAM
+    mov dword ptr [r10+8], 1 ; Etat RAM
+    
+    ; Mise à jour Offset RAM
     mov eax, [r10+4]
     add [offsetRAM], rax
+    
+    ; Définit comme actif
     mov rax, [r10+16]
     mov [ActiveProgID], ecx
     jmp FinUtil
 
 PasDePlaceUtil:
+    ; --- NON : On doit faire de la place ---
     push r10
     push r11
-    call EjecterPremierProgramme ; Libère juste ce qu'il faut
+    call EjecterPremierProgramme ; FIFO + Compactage
     pop r11
     pop r10
-    jmp VerifierPlaceUtil
+    jmp VerifierPlaceUtil    ; On réessaie
 
 EstDejaEnRam:
     mov rax, [r10+16]
@@ -466,6 +529,10 @@ FinUtil:
     ret
 UtiliserProcessusASM endp
 
+; =========================================================
+; SECTION : SECURITE / VERIFICATION ACCES
+; Rôle : Simule une "Segmentation Fault" si on accède hors limites
+; =========================================================
 VerifierAccesASM proc
     xor r8, r8
     mov r9d, [NbProgs]
@@ -480,18 +547,23 @@ BoucleRechAcces:
     jmp BoucleRechAcces
 TrouveAcces:
     cmp dword ptr [r10+8], 1
-    jne PasEnRam
+    jne PasEnRam             ; Erreur si pas en RAM
+
+    ; Vérif Borne Inférieure
     mov rax, [r10+16]
     cmp rdx, rax
-    jb AccesRefuse
+    jb AccesRefuse           ; Adresse < Debut
+
+    ; Vérif Borne Supérieure
     mov r11d, [r10+4]
     add rax, r11
     cmp rdx, rax
-    jae AccesRefuse
-    mov rax, 1
+    jae AccesRefuse          ; Adresse >= Fin
+
+    mov rax, 1               ; Accès OK
     ret
 AccesRefuse:
-    xor rax, rax
+    xor rax, rax             ; Erreur SegFault
     ret
 PasEnRam:
     mov rax, -1
