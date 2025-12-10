@@ -41,7 +41,7 @@ extern VirtualFree  : proc
 
 ; =========================================================
 ; SECTION : GETTERS / SETTERS
-; Rôle : Interface simple pour permettre au C++ de lire les variables ASM
+; Rôle : permettre au C++ de lire les variables ASM
 ; =========================================================
 GetRamUsageASM proc
     mov rax, [offsetRAM]
@@ -91,7 +91,7 @@ InitNoyauASM proc
     sub rsp, 28h             ; Alignement de la pile (Shadow Space)
 
     ; 1. Allouer le bloc RAM (4 Mo)
-    mov rcx, 0               ; Adresse préférée (NULL = OS choisit)
+    mov rcx, 0               
     mov rdx, TAILLE_RAM_BYTES
     mov r8, MEM_COMMIT_RESERVE
     mov r9, PAGE_READWRITE
@@ -382,7 +382,7 @@ FinEjection:
 EjecterPremierProgramme endp
 
 ; =========================================================
-; SECTION : ALLOCATION & LANCEMENT
+; SECTION : ALLOCATION ET LANCEMENT
 ; =========================================================
 LancerProcessusASM proc
     ; ... (Recherche PCB standard) ...

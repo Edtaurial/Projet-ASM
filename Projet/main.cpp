@@ -34,9 +34,7 @@ extern "C" void SetActiveProgIDASM(int id);
 // =========================================================
 // SECTION : DONNÉES LOCALES (SIMULATION VISUELLE)
 // =========================================================
-// Cette map sert uniquement à afficher le "code source" à l'écran.
-// L'ASM gère la mémoire, mais ne stocke pas le texte des instructions "MOV, ADD...".
-// Le C++ garde ce texte pour faire joli dans l'interface "CPU".
+
 std::map<int, std::vector<std::string>> g_CodeSource;
 
 void InitialiserProgrammes() {
@@ -138,7 +136,7 @@ void AfficherTableauProcessus() {
     std::cout << " +----+----------+---------------------+------------------+------------------+\n";
 }
 
-// Simule l'affichage du CPU (Instruction Pointer)
+// Simule l'affichage du CPU 
 void AfficherProgrammeActif() {
     int actifID = GetActiveProgIDASM();
     std::cout << "\n CPU (PROGRAMME EN COURS D'EXECUTION)\n";
@@ -193,9 +191,9 @@ int main() {
         std::cout << " ACTIONS :\n";
         std::cout << "  1. Charger (Lancer)\n";
         std::cout << "  2. Fermer (Liberer)\n";
-        std::cout << "  5. Utiliser / Activer (Mettre en Execution)\n";
-        std::cout << "  6. Test Acces Memoire (Simulation Protection)\n";
-        std::cout << "  9. Quitter\n";
+        std::cout << "  3. Utiliser / Activer (Mettre en Execution)\n";
+        std::cout << "  4. Test Acces Memoire (Simulation Protection)\n";
+        std::cout << "  5. Quitter\n";
         std::cout << "\n Choix > ";
 
         int choix;
@@ -205,7 +203,7 @@ int main() {
             continue;
         }
 
-        if (choix == 9) break;
+        if (choix == 5) break;
 
         messageNotification = "En attente...";
 
@@ -224,17 +222,17 @@ int main() {
             if (FermerProcessusASM(id)) messageNotification = "[SUCCES] Prog " + std::to_string(id) + " ferme.";
             else messageNotification = "[ERREUR] ID introuvable.";
         }
-        else if (choix == 5) {
+        else if (choix == 3) {
             std::cout << "ID a activer > "; int id; std::cin >> id;
             // Appel ASM : Swap In si nécessaire pour rendre actif
             void* res = UtiliserProcessusASM(id);
             if (res) messageNotification = "[ACTIF] Prog " + std::to_string(id) + " a pris le controle.";
             else messageNotification = "[ERREUR] Impossible d'activer ID " + std::to_string(id);
         }
-        else if (choix == 6) {
+        else if (choix == 4) {
             // Test de la protection mémoire (Segmentation Fault simulation)
             std::cout << "ID Prog > "; int id; std::cin >> id;
-            std::cout << "Adresse Hex (ex: 14000) > ";
+            std::cout << "Adresse Hex (ex: 0000022E63840000) > ";
             size_t addrVal;
             std::cin >> std::hex >> addrVal; std::cin >> std::dec;
 
