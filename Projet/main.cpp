@@ -8,14 +8,9 @@
 #include <limits> 
 #include <map> 
 
-// =========================================================
-// SECTION : LIENS AVEC L'ASSEMBLEUR (L'INTERFACE)
-// =========================================================
-// 'extern "C"' dit au compilateur C++ : "Ne change pas les noms de ces fonctions
-// (pas de name mangling), car elles sont définies ailleurs (dans le fichier .asm)."
-// C'est le pont entre ton interface et ton noyau.
 
-// Commandes d'action
+
+// fonctions pour les actions
 extern "C" void InitNoyauASM();
 extern "C" void LibererMemoireASM();
 extern "C" void EnregistrerProcessusASM(int id, int taille);
@@ -24,7 +19,7 @@ extern "C" int FermerProcessusASM(int id);
 extern "C" void* UtiliserProcessusASM(int id);
 extern "C" int VerifierAccesASM(int id, void* addr);
 
-// Commandes de consultation (Getters)
+// fonctions pour la consultation (Getters)
 extern "C" int GetNbProgsASM();
 extern "C" int GetProcessInfoASM(int index, int* id, int* taille, int* etat, void** addr);
 extern "C" long long GetRamUsageASM();
@@ -179,7 +174,7 @@ int main() {
 
         // --- EN-TÊTE ---
         std::cout << "======================================================================\n";
-        std::cout << "              SIMULATEUR DE MEMOIRE VIRTUELLE (OS)                    \n";
+        std::cout << "              SIMULATEUR DE MEMOIRE VIRTUELLE                         \n";
         std::cout << "======================================================================\n\n";
 
         // --- AFFICHAGE ETAT (Interrogation du Noyau ASM) ---
